@@ -78,6 +78,8 @@ if "puntos" not in st.session_state:
 
 if "dia_activo" not in st.session_state:
     st.session_state.dia_activo = 1
+if "pending_dia_activo" in st.session_state:
+    st.session_state.dia_activo = st.session_state.pop("pending_dia_activo")
 
 @st.cache_data(show_spinner=False)
 def osrm_route(coords):
@@ -198,7 +200,7 @@ with col1:
             st.session_state.orden[destino_dia].append(mover_a_otro_dia)
         st.session_state.puntos[mover_a_otro_dia]["dia"] = destino_dia
         st.session_state.version += 1
-        st.session_state.dia_activo = destino_dia
+        st.session_state.pending_dia_activo = destino_dia
         st.rerun()
 
 if dia_puntos:
