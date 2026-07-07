@@ -3,6 +3,8 @@ import streamlit as st
 import requests
 import pandas as pd
 import folium
+import json
+import os
 from streamlit_folium import st_folium
 from streamlit_sortables import sort_items
 
@@ -10,34 +12,69 @@ st.set_page_config(page_title="Ruta Aerodromos Granada", layout="wide")
 
 HOTEL = {"nombre": "B&B HOTEL Granada (Pulianas)", "lat": 37.2120987, "lon": -3.618852}
 
-# Coordenadas confirmadas por el usuario (Google Maps)
-DEFAULT_POINTS = [
+ORIGINAL_POINTS = [
     {"nombre": "Aeródromo de Atarfe", "lat": 37.2953081, "lon": -3.7140441, "dia": 1},
     {"nombre": "Aeropuerto Federico García Lorca Granada-Jaén", "lat": 37.1887, "lon": -3.7776, "dia": 1},
     {"nombre": "Aeródromo de Loja", "lat": 37.1377283, "lon": -4.2698833, "dia": 1},
-
     {"nombre": "Aeródromo Juan Espadafor", "lat": 37.08950, "lon": -3.78830, "dia": 2},
     {"nombre": "Helipuerto de Sierra Nevada", "lat": 37.0921041, "lon": -3.4003453, "dia": 2},
     {"nombre": "Helipuerto del CEDEFO La Resinera", "lat": 36.9352179, "lon": -3.8612064, "dia": 2},
-
     {"nombre": "Helipuerto del CEDEFO Puerto Lobo", "lat": 37.238648, "lon": -3.535132, "dia": 3},
     {"nombre": "Helipuerto Los Moralillos (Jerez del Marquesado)", "lat": 37.1848578, "lon": -3.1734565, "dia": 3},
     {"nombre": "Helipuerto de Baza", "lat": 37.4991954, "lon": -2.7527541, "dia": 3},
 ]
 
-def default_state():
-    puntos = {p["nombre"]: dict(p) for p in DEFAULT_POINTS}
+CONFIG_FILE = "config_guardada.json"
+
+def points_to_state(points):
+    puntos = {p["nombre"]: dict(p) for p in points}
     orden = {1: [], 2: [], 3: []}
-    for p in DEFAULT_POINTS:
+    for p in points:
         orden[p["dia"]].append(p["nombre"])
-    activos = {p["nombre"]: True for p in DEFAULT_POINTS}
+    activos = {p["nombre"]: True for p in points}
     return puntos, orden, activos
 
-if "puntos" not in st.session_state:
-    st.session_state.puntos, st.session_state.orden, st.session_state.activos = default_state()
+def load_saved_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data["puntos"], {int(k): v for k, v in data["orden"].items()}, data["activos"]
+        except Exception:
+            return None
+    return None
 
-def reset_defaults():
-    st.session_state.puntos, st.session_state.orden, st.session_state.activos = default_state()
+def save_current_config():
+    data = {
+        "puntos": st.session_state.puntos,
+        "orden": st.session_state.orden,
+        "activos": st.session_state.activos,
+    }
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def init_state():
+    saved = load_saved_config()
+    if saved:
+        st.session_state.puntos, st.session_state.orden, st.session_state.activos = saved
+    else:
+        st.session_state.puntos, st.session_state.orden, st.session_state.activos = points_to_state(ORIGINAL_POINTS)
+    st.session_state.version = st.session_state.get("version", 0) + 1
+
+def reset_to_original():
+    st.session_state.puntos, st.session_state.orden, st.session_state.activos = points_to_state(ORIGINAL_POINTS)
+    if os.path.exists(CONFIG_FILE):
+        os.remove(CONFIG_FILE)
+    st.session_state.version = st.session_state.get("version", 0) + 1
+
+def reset_to_saved():
+    saved = load_saved_config()
+    if saved:
+        st.session_state.puntos, st.session_state.orden, st.session_state.activos = saved
+        st.session_state.version = st.session_state.get("version", 0) + 1
+
+if "puntos" not in st.session_state:
+    init_state()
 
 @st.cache_data(show_spinner=False)
 def osrm_route(coords):
@@ -65,47 +102,94 @@ st.caption("Planificación en 3 días partiendo y volviendo cada día al B&B HOT
 
 with st.sidebar:
     st.header("⚙️ Configuración")
-    if st.button("🔄 Restaurar configuración por defecto", use_container_width=True):
-        reset_defaults()
+
+    saved_exists = os.path.exists(CONFIG_FILE)
+
+    if st.button("💾 Guardar configuración actual como nueva por defecto", use_container_width=True, type="primary"):
+        save_current_config()
+        st.success("Configuración guardada. Ahora es la nueva configuración por defecto.")
         st.rerun()
+
+    if saved_exists:
+        if st.button("↩️ Restaurar última configuración guardada", use_container_width=True):
+            reset_to_saved()
+            st.rerun()
+
+    if st.button("🔄 Restaurar configuración original (de fábrica)", use_container_width=True):
+        reset_to_original()
+        st.rerun()
+
     st.divider()
     st.subheader("Activar / desactivar destinos")
     for nombre in list(st.session_state.puntos.keys()):
-        st.session_state.activos[nombre] = st.checkbox(
+        nuevo_val = st.checkbox(
             nombre, value=st.session_state.activos.get(nombre, True), key=f"chk_{nombre}"
         )
+        if nuevo_val != st.session_state.activos.get(nombre, True):
+            st.session_state.activos[nombre] = nuevo_val
+            st.rerun()
 
-tabs = st.tabs(["📅 Día 1 (Oeste)", "📅 Día 2 (Sur)", "📅 Día 3 (Este)", "📊 Resumen 3 días"])
+tabs = st.tabs(["📅 Día 1", "📅 Día 2", "📅 Día 3", "📊 Resumen 3 días"])
+
+todos_los_nombres = list(st.session_state.puntos.keys())
 
 for i, tab in enumerate(tabs[:3], start=1):
     with tab:
         st.subheader(f"Día {i}")
+
+        for d in [1, 2, 3]:
+            st.session_state.orden[d] = [n for n in st.session_state.orden[d] if n in todos_los_nombres]
+        asignados = set()
+        for d in [1, 2, 3]:
+            asignados.update(st.session_state.orden[d])
+        for n in todos_los_nombres:
+            if n not in asignados:
+                st.session_state.orden[1].append(n)
+
         activos_dia = [n for n in st.session_state.orden[i] if st.session_state.activos.get(n, True)]
 
         col1, col2 = st.columns([1, 1])
         with col1:
             st.markdown("**Arrastra para reordenar la ruta del día**")
             if activos_dia:
-                sorted_items = sort_items(activos_dia, key=f"sort_{i}")
-                if sorted_items and sorted_items != activos_dia:
+                sort_key = f"sort_{i}_{st.session_state.version}_{len(activos_dia)}"
+                sorted_items = sort_items(activos_dia, key=sort_key)
+                if sorted_items and set(sorted_items) == set(activos_dia) and sorted_items != activos_dia:
                     inactivos = [n for n in st.session_state.orden[i] if n not in activos_dia]
                     st.session_state.orden[i] = sorted_items + inactivos
-                    st.rerun()
-                dia_puntos = sorted_items if sorted_items else activos_dia
+                    dia_puntos = sorted_items
+                else:
+                    dia_puntos = sorted_items if sorted_items else activos_dia
             else:
                 dia_puntos = []
                 st.info("No hay destinos activos este día.")
 
-            mover_a_otro_dia = st.selectbox(
-                "Mover un destino a otro día",
-                options=["-- selecciona --"] + dia_puntos,
-                key=f"mover_{i}",
-            )
-            destino_dia = st.selectbox("Nuevo día", options=[1, 2, 3], key=f"destino_dia_{i}")
-            if mover_a_otro_dia != "-- selecciona --" and st.button("Mover", key=f"btn_mover_{i}"):
-                st.session_state.orden[i].remove(mover_a_otro_dia)
-                st.session_state.orden[destino_dia].append(mover_a_otro_dia)
+            st.markdown("**Mover un destino a otro día**")
+            mc1, mc2, mc3 = st.columns([2, 1, 1])
+            with mc1:
+                mover_a_otro_dia = st.selectbox(
+                    "Destino a mover",
+                    options=["-- selecciona --"] + dia_puntos,
+                    key=f"mover_sel_{i}",
+                    label_visibility="collapsed",
+                )
+            with mc2:
+                destino_dia = st.selectbox(
+                    "Día destino",
+                    options=[d for d in [1, 2, 3] if d != i],
+                    key=f"destino_dia_{i}",
+                    label_visibility="collapsed",
+                )
+            with mc3:
+                mover_click = st.button("Mover ➡️", key=f"btn_mover_{i}", use_container_width=True)
+
+            if mover_click and mover_a_otro_dia != "-- selecciona --":
+                if mover_a_otro_dia in st.session_state.orden[i]:
+                    st.session_state.orden[i].remove(mover_a_otro_dia)
+                if mover_a_otro_dia not in st.session_state.orden[destino_dia]:
+                    st.session_state.orden[destino_dia].append(mover_a_otro_dia)
                 st.session_state.puntos[mover_a_otro_dia]["dia"] = destino_dia
+                st.session_state.version += 1
                 st.rerun()
 
         if not dia_puntos:
@@ -137,7 +221,7 @@ for i, tab in enumerate(tabs[:3], start=1):
                           icon=folium.DivIcon(html=f'<div style="background:#1f77b4;color:white;border-radius:50%;width:24px;height:24px;text-align:center;font-size:12px;">{idx}</div>')).add_to(m)
         if geometry:
             folium.PolyLine([(c[1], c[0]) for c in geometry], color="blue", weight=4, opacity=0.7).add_to(m)
-        st_folium(m, height=450, width=None, key=f"map_{i}")
+        st_folium(m, height=450, width=None, key=f"map_{i}_{st.session_state.version}")
 
 with tabs[3]:
     st.subheader("Resumen del viaje completo")
