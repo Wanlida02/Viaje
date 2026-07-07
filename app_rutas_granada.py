@@ -76,6 +76,9 @@ def reset_to_saved():
 if "puntos" not in st.session_state:
     init_state()
 
+if "dia_activo" not in st.session_state:
+    st.session_state.dia_activo = 1
+
 @st.cache_data(show_spinner=False)
 def osrm_route(coords):
     coord_str = ";".join([f"{lon},{lat}" for lat, lon in coords])
@@ -108,7 +111,6 @@ with st.sidebar:
     if st.button("💾 Guardar configuración actual como nueva por defecto", use_container_width=True, type="primary"):
         save_current_config()
         st.success("Configuración guardada. Ahora es la nueva configuración por defecto.")
-        st.rerun()
 
     if saved_exists:
         if st.button("↩️ Restaurar última configuración guardada", use_container_width=True):
@@ -129,136 +131,140 @@ with st.sidebar:
             st.session_state.activos[nombre] = nuevo_val
             st.rerun()
 
-tabs = st.tabs(["📅 Día 1", "📅 Día 2", "📅 Día 3", "📊 Resumen 3 días"])
-
 todos_los_nombres = list(st.session_state.puntos.keys())
+for d in [1, 2, 3]:
+    st.session_state.orden[d] = [n for n in st.session_state.orden[d] if n in todos_los_nombres]
+asignados = set()
+for d in [1, 2, 3]:
+    asignados.update(st.session_state.orden[d])
+for n in todos_los_nombres:
+    if n not in asignados:
+        st.session_state.orden[1].append(n)
 
-for i, tab in enumerate(tabs[:3], start=1):
-    with tab:
-        st.subheader(f"Día {i}")
-
-        for d in [1, 2, 3]:
-            st.session_state.orden[d] = [n for n in st.session_state.orden[d] if n in todos_los_nombres]
-        asignados = set()
-        for d in [1, 2, 3]:
-            asignados.update(st.session_state.orden[d])
-        for n in todos_los_nombres:
-            if n not in asignados:
-                st.session_state.orden[1].append(n)
-
-        activos_dia = [n for n in st.session_state.orden[i] if st.session_state.activos.get(n, True)]
-
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            st.markdown("**Arrastra para reordenar la ruta del día**")
-            if activos_dia:
-                sort_key = f"sort_{i}_{st.session_state.version}_{len(activos_dia)}"
-                sorted_items = sort_items(activos_dia, key=sort_key)
-                if sorted_items and set(sorted_items) == set(activos_dia) and sorted_items != activos_dia:
-                    inactivos = [n for n in st.session_state.orden[i] if n not in activos_dia]
-                    st.session_state.orden[i] = sorted_items + inactivos
-                    dia_puntos = sorted_items
-                else:
-                    dia_puntos = sorted_items if sorted_items else activos_dia
-            else:
-                dia_puntos = []
-                st.info("No hay destinos activos este día.")
-
-            st.markdown("**Mover un destino a otro día**")
-            mc1, mc2, mc3 = st.columns([2, 1, 1])
-            with mc1:
-                mover_a_otro_dia = st.selectbox(
-                    "Destino a mover",
-                    options=["-- selecciona --"] + dia_puntos,
-                    key=f"mover_sel_{i}",
-                    label_visibility="collapsed",
-                )
-            with mc2:
-                destino_dia = st.selectbox(
-                    "Día destino",
-                    options=[d for d in [1, 2, 3] if d != i],
-                    key=f"destino_dia_{i}",
-                    label_visibility="collapsed",
-                )
-            with mc3:
-                mover_click = st.button("Mover ➡️", key=f"btn_mover_{i}", use_container_width=True)
-
-            if mover_click and mover_a_otro_dia != "-- selecciona --":
-                if mover_a_otro_dia in st.session_state.orden[i]:
-                    st.session_state.orden[i].remove(mover_a_otro_dia)
-                if mover_a_otro_dia not in st.session_state.orden[destino_dia]:
-                    st.session_state.orden[destino_dia].append(mover_a_otro_dia)
-                st.session_state.puntos[mover_a_otro_dia]["dia"] = destino_dia
-                st.session_state.version += 1
-                st.rerun()
-
-        if not dia_puntos:
-            continue
-
-        coords = [(HOTEL["lat"], HOTEL["lon"])]
-        for n in dia_puntos:
-            p = st.session_state.puntos[n]
-            coords.append((p["lat"], p["lon"]))
-        coords.append((HOTEL["lat"], HOTEL["lon"]))
-
-        duration, distance, geometry = osrm_route(coords)
-
-        with col2:
-            st.markdown("**Tiempo y distancia estimados**")
-            if duration:
-                st.metric("⏱️ Tiempo total conduciendo", f"{duration/3600:.1f} h")
-                st.metric("📏 Distancia total", f"{distance/1000:.0f} km")
-            else:
-                st.warning("No se pudo calcular la ruta (servicio OSRM no disponible en este momento).")
-            st.link_button("📍 Abrir esta ruta en Google Maps", gmaps_link(dia_puntos), use_container_width=True)
-
-        m = folium.Map(location=[HOTEL["lat"], HOTEL["lon"]], zoom_start=9)
-        folium.Marker([HOTEL["lat"], HOTEL["lon"]], popup="Hotel (inicio/fin)",
-                      icon=folium.Icon(color="green", icon="home")).add_to(m)
-        for idx, n in enumerate(dia_puntos, start=1):
-            p = st.session_state.puntos[n]
-            folium.Marker([p["lat"], p["lon"]], popup=f"{idx}. {n}",
-                          icon=folium.DivIcon(html=f'<div style="background:#1f77b4;color:white;border-radius:50%;width:24px;height:24px;text-align:center;font-size:12px;">{idx}</div>')).add_to(m)
-        if geometry:
-            folium.PolyLine([(c[1], c[0]) for c in geometry], color="blue", weight=4, opacity=0.7).add_to(m)
-        st_folium(m, height=450, width=None, key=f"map_{i}_{st.session_state.version}")
-
-with tabs[3]:
-    st.subheader("Resumen del viaje completo")
-    rows = []
-    gtotal_dur = 0
-    gtotal_dist = 0
-    for d in [1, 2, 3]:
-        dia_puntos = [n for n in st.session_state.orden[d] if st.session_state.activos.get(n, True)]
-        if not dia_puntos:
-            continue
-        coords = [(HOTEL["lat"], HOTEL["lon"])] + [
-            (st.session_state.puntos[n]["lat"], st.session_state.puntos[n]["lon"]) for n in dia_puntos
-        ] + [(HOTEL["lat"], HOTEL["lon"])]
-        duration, distance, _ = osrm_route(coords)
-        if duration:
-            gtotal_dur += duration
-            gtotal_dist += distance
-            rows.append({
-                "Día": d,
-                "Destinos": " → ".join(dia_puntos),
-                "Tiempo (h)": round(duration / 3600, 1),
-                "Distancia (km)": round(distance / 1000, 0),
-                "Google Maps": gmaps_link(dia_puntos),
-            })
-    if rows:
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={"Google Maps": st.column_config.LinkColumn("Google Maps", display_text="Abrir ruta")},
-        )
-        c1, c2 = st.columns(2)
-        c1.metric("⏱️ Tiempo total viaje", f"{gtotal_dur/3600:.1f} h")
-        c2.metric("📏 Distancia total viaje", f"{gtotal_dist/1000:.0f} km")
-    else:
-        st.info("Activa destinos en los días para ver el resumen.")
+st.radio(
+    "Selecciona el día a editar",
+    options=[1, 2, 3],
+    format_func=lambda x: f"📅 Día {x}",
+    horizontal=True,
+    key="dia_activo",
+)
 
 st.divider()
+
+i = st.session_state.dia_activo
+st.subheader(f"Día {i}")
+
+activos_dia = [n for n in st.session_state.orden[i] if st.session_state.activos.get(n, True)]
+
+col1, col2 = st.columns([1, 1])
+with col1:
+    st.markdown("**Arrastra para reordenar la ruta del día**")
+    if activos_dia:
+        sort_key = f"sort_{i}_{st.session_state.version}_{len(activos_dia)}"
+        sorted_items = sort_items(activos_dia, key=sort_key)
+        if sorted_items and set(sorted_items) == set(activos_dia) and sorted_items != activos_dia:
+            inactivos = [n for n in st.session_state.orden[i] if n not in activos_dia]
+            st.session_state.orden[i] = sorted_items + inactivos
+            dia_puntos = sorted_items
+        else:
+            dia_puntos = sorted_items if sorted_items else activos_dia
+    else:
+        dia_puntos = []
+        st.info("No hay destinos activos este día.")
+
+    st.markdown("**Mover un destino a otro día**")
+    mc1, mc2, mc3 = st.columns([2, 1, 1])
+    with mc1:
+        mover_a_otro_dia = st.selectbox(
+            "Destino a mover",
+            options=["-- selecciona --"] + dia_puntos,
+            key=f"mover_sel_{i}",
+            label_visibility="collapsed",
+        )
+    with mc2:
+        destino_dia = st.selectbox(
+            "Día destino",
+            options=[d for d in [1, 2, 3] if d != i],
+            key=f"destino_dia_{i}",
+            label_visibility="collapsed",
+        )
+    with mc3:
+        mover_click = st.button("Mover ➡️", key=f"btn_mover_{i}", use_container_width=True)
+
+    if mover_click and mover_a_otro_dia != "-- selecciona --":
+        if mover_a_otro_dia in st.session_state.orden[i]:
+            st.session_state.orden[i].remove(mover_a_otro_dia)
+        if mover_a_otro_dia not in st.session_state.orden[destino_dia]:
+            st.session_state.orden[destino_dia].append(mover_a_otro_dia)
+        st.session_state.puntos[mover_a_otro_dia]["dia"] = destino_dia
+        st.session_state.version += 1
+        st.session_state.dia_activo = destino_dia
+        st.rerun()
+
+if dia_puntos:
+    coords = [(HOTEL["lat"], HOTEL["lon"])]
+    for n in dia_puntos:
+        p = st.session_state.puntos[n]
+        coords.append((p["lat"], p["lon"]))
+    coords.append((HOTEL["lat"], HOTEL["lon"]))
+
+    duration, distance, geometry = osrm_route(coords)
+
+    with col2:
+        st.markdown("**Tiempo y distancia estimados**")
+        if duration:
+            st.metric("⏱️ Tiempo total conduciendo", f"{duration/3600:.1f} h")
+            st.metric("📏 Distancia total", f"{distance/1000:.0f} km")
+        else:
+            st.warning("No se pudo calcular la ruta (servicio OSRM no disponible en este momento).")
+        st.link_button("📍 Abrir esta ruta en Google Maps", gmaps_link(dia_puntos), use_container_width=True)
+
+    m = folium.Map(location=[HOTEL["lat"], HOTEL["lon"]], zoom_start=9)
+    folium.Marker([HOTEL["lat"], HOTEL["lon"]], popup="Hotel (inicio/fin)",
+                  icon=folium.Icon(color="green", icon="home")).add_to(m)
+    for idx, n in enumerate(dia_puntos, start=1):
+        p = st.session_state.puntos[n]
+        folium.Marker([p["lat"], p["lon"]], popup=f"{idx}. {n}",
+                      icon=folium.DivIcon(html=f'<div style="background:#1f77b4;color:white;border-radius:50%;width:24px;height:24px;text-align:center;font-size:12px;">{idx}</div>')).add_to(m)
+    if geometry:
+        folium.PolyLine([(c[1], c[0]) for c in geometry], color="blue", weight=4, opacity=0.7).add_to(m)
+    st_folium(m, height=450, width=None, key=f"map_{i}_{st.session_state.version}")
+
+st.divider()
+st.subheader("📊 Resumen del viaje completo")
+rows = []
+gtotal_dur = 0
+gtotal_dist = 0
+for d in [1, 2, 3]:
+    dia_puntos_d = [n for n in st.session_state.orden[d] if st.session_state.activos.get(n, True)]
+    if not dia_puntos_d:
+        continue
+    coords_d = [(HOTEL["lat"], HOTEL["lon"])] + [
+        (st.session_state.puntos[n]["lat"], st.session_state.puntos[n]["lon"]) for n in dia_puntos_d
+    ] + [(HOTEL["lat"], HOTEL["lon"])]
+    duration_d, distance_d, _ = osrm_route(coords_d)
+    if duration_d:
+        gtotal_dur += duration_d
+        gtotal_dist += distance_d
+        rows.append({
+            "Día": d,
+            "Destinos": " → ".join(dia_puntos_d),
+            "Tiempo (h)": round(duration_d / 3600, 1),
+            "Distancia (km)": round(distance_d / 1000, 0),
+            "Google Maps": gmaps_link(dia_puntos_d),
+        })
+if rows:
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={"Google Maps": st.column_config.LinkColumn("Google Maps", display_text="Abrir ruta")},
+    )
+    c1, c2 = st.columns(2)
+    c1.metric("⏱️ Tiempo total viaje", f"{gtotal_dur/3600:.1f} h")
+    c2.metric("📏 Distancia total viaje", f"{gtotal_dist/1000:.0f} km")
+else:
+    st.info("Activa destinos en los días para ver el resumen.")
+
 st.caption("Coordenadas verificadas manualmente por el usuario en Google Maps. Tiempos estimados con OSRM (sin tráfico en tiempo real). Verifica horarios de apertura antes de viajar.")
